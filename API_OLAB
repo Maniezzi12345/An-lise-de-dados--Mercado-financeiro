@@ -1,0 +1,101 @@
+# Importa as bibliotecas necessárias
+import firebase_admin
+import requests
+import os
+from firebase_admin import credentials, db
+from datetime import datetime
+import pytz
+from dotenv import load_dotenv
+
+# Carrega as variáveis de ambiente
+load_dotenv()
+
+# Inicializa o Firebase de forma segura
+try:
+    cred_path = os.getenv("FIREBASE_CREDENTIALS")  
+    cred = credentials.Certificate(cred_path)  
+    firebase_admin.initialize_app(cred, {
+        'databaseURL': os.getenv("FIREBASE_DB_URL")  
+    })  
+    db_ref = db.reference('acoes')  
+    print("Firebase Realtime Database conectado com sucesso")
+except Exception as e:
+    print(f"Erro ao inicializar o Firebase: {str(e)}")
+    exit(1)
+
+# Autenticação segura na API da Oplab
+url_autenticacao = "https://api.oplab.com.br/v3/domain/users/authenticate"
+url_autorizacao = "https://api.oplab.com.br/v3/domain/users/authorize"
+headers_autenticacao = {"content-type": "application/json"}
+payload = {
+    "email": os.getenv("OPLAB_EMAIL"),  
+    "password": os.getenv("OPLAB_PASSWORD")  
+}
+
+print("Iniciando autenticação...")
+try:
+    response = requests.post(url_autenticacao, headers=headers_autenticacao, json=payload)  
+    response.raise_for_status()
+    dados = response.json()
+    access_token = dados.get("access-token")
+    if not access_token:
+        print("Erro: Token de acesso não encontrado na resposta")
+        exit(1)
+    print("Access Token obtido com sucesso")
+except requests.exceptions.RequestException as e:
+    print(f"Erro na autenticação: {str(e)}")
+    exit(1)
+
+# Autorização na API da Oplab
+headers_autorizacao = {"Access-Token": access_token}
+try:
+    response = requests.get(url_autorizacao, headers=headers_autorizacao)  
+    response.raise_for_status()
+    print("Autorização bem-sucedida")
+except requests.exceptions.RequestException as e:
+    print(f"Erro na autorização: {str(e)}")
+    exit(1)
+
+# Lista de ações a serem consultadas
+symbols = ["PETR4", "VALE3", "PETZ3", "ENGI11"]
+with_financials = "true"
+
+# Loop para consultar os dados de cada ação
+for symbol in symbols:
+    url = f"https://api.oplab.com.br/v3/market/stocks/{symbol}?with_financials={with_financials}"  
+    headers = {"Access-Token": access_token}
+
+    try:
+        response = requests.get(url, headers=headers)  
+        response.raise_for_status()
+        dados = response.json()
+
+        # Captura os principais indicadores e remove valores None
+        indicadores = {
+            'Open': dados.get("open"),
+            'Close': dados.get("close"),
+            'High': dados.get("high"),
+            'Low': dados.get("low"),
+            'Volume': dados.get("volume"),
+            'P/E Ratio': dados.get("pe_ratio"),
+            'Dividend Yield': dados.get("dividend_yield"),
+            'Beta': dados.get("beta"),
+            'EPS': dados.get("eps"),
+            'Market Cap': dados.get("market_cap"),
+            'Timestamp': datetime.now(pytz.UTC).isoformat()
+        }
+
+        # Remove campos que são None antes de enviar ao Firebase
+        indicadores = {k: v for k, v in indicadores.items() if v is not None}
+
+        # Define a data para armazenar no Firebase
+        data_atual = datetime.now(pytz.UTC).strftime("%Y%m%d")  
+
+        try:
+            db_ref.child(symbol).child(data_atual).push(indicadores)  
+            print(f"Dados de {symbol} enviados ao Firebase com sucesso")
+        except Exception as e:
+            print(f"Erro ao salvar {symbol} no Firebase: {str(e)}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Erro ao consultar a API para {symbol}: {str(e)}")
